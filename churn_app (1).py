@@ -151,16 +151,27 @@ def load_data(path):
 def preprocess(df):
     df2 = df.copy()
     le = LabelEncoder()
+
+    # Encode ALL non-numeric columns including any leftover categories
     for col in df2.columns:
-        if df2[col].dtype == "object":
-            df2[col] = le.fit_transform(df2[col])
+        if df2[col].dtype == "object" or str(df2[col].dtype) == "category":
+            df2[col] = le.fit_transform(df2[col].astype(str))
+
+    # Force every column to numeric, coerce any remaining issues
+    for col in df2.columns:
+        df2[col] = pd.to_numeric(df2[col], errors="coerce")
+
+    df2.dropna(inplace=True)
+    df2 = df2.reset_index(drop=True)
+
     X = df2.drop("Churn", axis=1)
     y = df2["Churn"]
+
     scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
+    X_scaled = scaler.fit_transform(X.astype(float))
     return X_scaled, y, df2
 
-@st.cache_data
+
 def train_models(X_scaled, y):
     X_train, X_test, y_train, y_test = train_test_split(
         X_scaled, y, test_size=0.2, random_state=42
@@ -186,7 +197,7 @@ def train_models(X_scaled, y):
         }
     return results, X_test, y_test
 
-@st.cache_data
+
 def run_clustering(X_scaled):
     km = KMeans(n_clusters=3, random_state=42, n_init=10)
     labels = km.fit_predict(X_scaled)
@@ -258,9 +269,16 @@ else:
     df_raw.drop_duplicates(inplace=True)
     df_raw.dropna(inplace=True)
 
-X_scaled, y, df_enc = preprocess(df_raw)
-results, X_test, y_test = train_models(X_scaled, y)
-km_labels, db_labels = run_clustering(X_scaled)
+with st.spinner("Processing data & training models..."):
+    X_scaled, y, df_enc = preprocess(df_raw)
+
+    cache_key = f"models_{len(df_raw)}_{df_raw.shape[1]}"
+    if cache_key not in st.session_state:
+        results, X_test, y_test = train_models(X_scaled, y)
+        km_labels, db_labels = run_clustering(X_scaled)
+        st.session_state[cache_key] = (results, X_test, y_test, km_labels, db_labels)
+    else:
+        results, X_test, y_test, km_labels, db_labels = st.session_state[cache_key]
 best_model_name = max(results, key=lambda k: results[k]["Accuracy"])
 best = results[best_model_name]
 
@@ -611,29 +629,34 @@ elif page == "Predict":
         paperless = st.radio("Paperless billing", ["Yes", "No"])
 
     if st.button("Predict churn →", type="primary"):
-        le2 = LabelEncoder()
-        row = pd.DataFrame([{
-            "gender": 0, "SeniorCitizen": 1 if senior == "Yes" else 0,
-            "Partner": 1 if partner == "Yes" else 0,
-            "Dependents": 0, "tenure": tenure,
-            "PhoneService": 1, "MultipleLines": 0,
-            "InternetService": ["DSL", "Fiber optic", "No"].index(internet),
-            "OnlineSecurity": 0, "OnlineBackup": 0,
-            "DeviceProtection": 0, "TechSupport": 0,
-            "StreamingTV": 0, "StreamingMovies": 0,
-            "Contract": ["Month-to-month", "One year", "Two year"].index(contract),
-            "PaperlessBilling": 1 if paperless == "Yes" else 0,
-            "PaymentMethod": ["Bank transfer (automatic)", "Credit card (automatic)", "Electronic check", "Mailed check"].index(payment) if payment in ["Bank transfer (automatic)", "Credit card (automatic)", "Electronic check", "Mailed check"] else 0,
-            "MonthlyCharges": monthly, "TotalCharges": total,
-        }])
-        scaler2 = StandardScaler()
-        X_full = df_enc.drop("Churn", axis=1)
-        scaler2.fit(X_full)
-        row_scaled = scaler2.transform(row[X_full.columns])
+        try:
+            X_full = df_enc.drop("Churn", axis=1)
+            row = pd.DataFrame([{col: 0 for col in X_full.columns}])
 
-        rf_model = results["Random Forest"]["model"]
-        proba = rf_model.predict_proba(row_scaled)[0][1]
-        pred = "Yes" if proba >= 0.5 else "No"
+            row["tenure"] = tenure
+            row["MonthlyCharges"] = monthly
+            row["TotalCharges"] = total
+            row["SeniorCitizen"] = 1 if senior == "Yes" else 0
+            if "Contract" in row.columns:
+                row["Contract"] = ["Month-to-month", "One year", "Two year"].index(contract)
+            if "InternetService" in row.columns:
+                row["InternetService"] = ["DSL", "Fiber optic", "No"].index(internet)
+            if "PaperlessBilling" in row.columns:
+                row["PaperlessBilling"] = 1 if paperless == "Yes" else 0
+            if "Partner" in row.columns:
+                row["Partner"] = 1 if partner == "Yes" else 0
+
+            row = row[X_full.columns].astype(float)
+            scaler2 = StandardScaler()
+            scaler2.fit(X_full.astype(float))
+            row_scaled = scaler2.transform(row)
+
+            rf_model = results["Random Forest"]["model"]
+            proba = rf_model.predict_proba(row_scaled)[0][1]
+            pred = "Yes" if proba >= 0.5 else "No"
+        except Exception as e:
+            st.error(f"Prediction error: {e}")
+            st.stop()
 
         st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
