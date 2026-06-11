@@ -171,7 +171,8 @@ if page == "Overview":
     st.title("📡 Telco Customer Churn Dashboard")
     st.caption(f"Data source: **{data_source}** — {len(df):,} customers")
 
-    churn_rate = (df["Churn"] == "Yes").mean() if df["Churn"].dtype == object else df["Churn"].mean()
+    churn_col = df["Churn"].astype(str).str.strip()
+    churn_rate = (churn_col == "Yes").mean() if churn_col.isin(["Yes","No"]).any() else pd.to_numeric(df["Churn"], errors="coerce").fillna(0).mean()
     avg_tenure = df["tenure"].mean() if "tenure" in df.columns else 0
     avg_charge = df["MonthlyCharges"].mean() if "MonthlyCharges" in df.columns else 0
     total_customers = len(df)
